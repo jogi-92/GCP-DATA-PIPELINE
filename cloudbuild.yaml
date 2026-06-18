@@ -42,7 +42,6 @@ steps:
           --quiet=true \
           "SELECT COUNT(*) as row_count FROM \`${_PROJECT_ID}.dev_dataset.users\`" \
           > /tmp/result.txt 2>&1
-        echo "BQ Output:"
         cat /tmp/result.txt
         ROW_COUNT=$$(grep -E '^[0-9]+$' /tmp/result.txt | head -1 | tr -d ' \r\n')
         echo "Row count: [$$ROW_COUNT]"
@@ -54,7 +53,19 @@ steps:
         fi
     waitFor: ["deploy-dev"]
 
-  # STEP 4: Deploy PRE-PROD
+  # STEP 4a: Copy CSV DEV → PRE-PROD (uses cloud-sdk which HAS gsutil)
+  - name: "gcr.io/google.com/cloudsdktool/cloud-sdk"
+    id: "copy-to-preprod"
+    entrypoint: bash
+    args:
+      - "-c"
+      - |
+        gsutil cp gs://${_PROJECT_ID}-dev-data-bucket/input/sample.csv \
+                  gs://${_PROJECT_ID}-preprod-data-bucket/input/sample.csv
+        echo "✅ CSV copied to preprod bucket"
+    waitFor: ["validate-dev"]
+
+  # STEP 4b: Deploy PRE-PROD
   - name: "python:3.11"
     id: "deploy-preprod"
     entrypoint: bash
@@ -63,10 +74,8 @@ steps:
       - |
         export PYTHONPATH="/builder/home/.local/lib/python3.11/site-packages"
         export PROJECT_ID="${_PROJECT_ID}"
-        gsutil cp gs://${_PROJECT_ID}-dev-data-bucket/input/sample.csv \
-                  gs://${_PROJECT_ID}-preprod-data-bucket/input/sample.csv
         python pipeline/load_to_bq.py preprod
-    waitFor: ["validate-dev"]
+    waitFor: ["copy-to-preprod"]
 
   # STEP 5: Validate PRE-PROD
   - name: "gcr.io/google.com/cloudsdktool/cloud-sdk"
@@ -93,7 +102,19 @@ steps:
         fi
     waitFor: ["deploy-preprod"]
 
-  # STEP 6: Deploy PROD
+  # STEP 6a: Copy CSV PRE-PROD → PROD
+  - name: "gcr.io/google.com/cloudsdktool/cloud-sdk"
+    id: "copy-to-prod"
+    entrypoint: bash
+    args:
+      - "-c"
+      - |
+        gsutil cp gs://${_PROJECT_ID}-preprod-data-bucket/input/sample.csv \
+                  gs://${_PROJECT_ID}-prod-data-bucket/input/sample.csv
+        echo "✅ CSV copied to prod bucket"
+    waitFor: ["validate-preprod"]
+
+  # STEP 6b: Deploy PROD
   - name: "python:3.11"
     id: "deploy-prod"
     entrypoint: bash
@@ -102,10 +123,8 @@ steps:
       - |
         export PYTHONPATH="/builder/home/.local/lib/python3.11/site-packages"
         export PROJECT_ID="${_PROJECT_ID}"
-        gsutil cp gs://${_PROJECT_ID}-preprod-data-bucket/input/sample.csv \
-                  gs://${_PROJECT_ID}-prod-data-bucket/input/sample.csv
         python pipeline/load_to_bq.py prod
-    waitFor: ["validate-preprod"]
+    waitFor: ["copy-to-prod"]
 
   # STEP 7: Validate PROD
   - name: "gcr.io/google.com/cloudsdktool/cloud-sdk"
