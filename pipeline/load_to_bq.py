@@ -16,7 +16,7 @@ def load_gcs_to_bq(env: str):
 
     client = bigquery.Client(project=project_id)
 
-    # Define schema
+    # Define schema FOR SAMPLE
     schema = [
         bigquery.SchemaField("id",         "INTEGER"),
         bigquery.SchemaField("name",       "STRING"),
