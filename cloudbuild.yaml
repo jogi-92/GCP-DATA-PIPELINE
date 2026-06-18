@@ -3,39 +3,50 @@ substitutions:
 
 steps:
 
-  # ─────────────────────────────────────
   # STEP 1: Install dependencies
-  # ─────────────────────────────────────
   - name: "python:3.11"
     id: "install-deps"
-    entrypoint: pip
-    args: ["install", "-r", "pipeline/requirements.txt", "--user"]
+    entrypoint: bash
+    args:
+      - "-c"
+      - |
+        pip install --user \
+          google-cloud-bigquery==3.11.4 \
+          google-cloud-storage==2.10.0
+        echo "✅ Dependencies installed"
 
-  # ─────────────────────────────────────
-  # STEP 2: Run pipeline on DEV
-  # ─────────────────────────────────────
+  # STEP 2: Deploy DEV
   - name: "python:3.11"
     id: "deploy-dev"
-    entrypoint: python
-    args: ["pipeline/load_to_bq.py", "dev"]
-    env:
-      - "PROJECT_ID=${_PROJECT_ID}"
+    entrypoint: bash
+    args:
+      - "-c"
+      - |
+        export PYTHONPATH="/builder/home/.local/lib/python3.11/site-packages"
+        export PROJECT_ID="${_PROJECT_ID}"
+        echo "Using PROJECT_ID: $$PROJECT_ID"
+        python pipeline/load_to_bq.py dev
     waitFor: ["install-deps"]
 
-  # ─────────────────────────────────────
-  # STEP 3: Validate DEV (row count check)
-  # ─────────────────────────────────────
+  # STEP 3: Validate DEV
   - name: "gcr.io/google.com/cloudsdktool/cloud-sdk"
     id: "validate-dev"
     entrypoint: bash
     args:
       - "-c"
       - |
-        ROW_COUNT=$$(bq query --nouse_legacy_sql \
-          "SELECT COUNT(*) as cnt FROM \`${_PROJECT_ID}.dev_dataset.users\`" \
-          --format=csv | tail -1 | tr -d ' ')
-        echo "DEV row count: $$ROW_COUNT"
-        if [ "$$ROW_COUNT" -gt "0" ]; then
+        bq query \
+          --project_id="${_PROJECT_ID}" \
+          --nouse_legacy_sql \
+          --format=csv \
+          --quiet=true \
+          "SELECT COUNT(*) as row_count FROM \`${_PROJECT_ID}.dev_dataset.users\`" \
+          > /tmp/result.txt 2>&1
+        echo "BQ Output:"
+        cat /tmp/result.txt
+        ROW_COUNT=$$(grep -E '^[0-9]+$' /tmp/result.txt | head -1 | tr -d ' \r\n')
+        echo "Row count: [$$ROW_COUNT]"
+        if [ -n "$$ROW_COUNT" ] && [ "$$ROW_COUNT" -gt 0 ]; then
           echo "✅ DEV validation passed"
         else
           echo "❌ DEV validation FAILED"
@@ -43,76 +54,80 @@ steps:
         fi
     waitFor: ["deploy-dev"]
 
-  # ─────────────────────────────────────
-  # STEP 4: Deploy to PRE-PROD
-  # ─────────────────────────────────────
+  # STEP 4: Deploy PRE-PROD
   - name: "python:3.11"
     id: "deploy-preprod"
     entrypoint: bash
     args:
       - "-c"
       - |
+        export PYTHONPATH="/builder/home/.local/lib/python3.11/site-packages"
+        export PROJECT_ID="${_PROJECT_ID}"
         gsutil cp gs://${_PROJECT_ID}-dev-data-bucket/input/sample.csv \
                   gs://${_PROJECT_ID}-preprod-data-bucket/input/sample.csv
         python pipeline/load_to_bq.py preprod
-    env:
-      - "PROJECT_ID=${_PROJECT_ID}"
     waitFor: ["validate-dev"]
 
-  # ─────────────────────────────────────
   # STEP 5: Validate PRE-PROD
-  # ─────────────────────────────────────
   - name: "gcr.io/google.com/cloudsdktool/cloud-sdk"
     id: "validate-preprod"
     entrypoint: bash
     args:
       - "-c"
       - |
-        ROW_COUNT=$$(bq query --nouse_legacy_sql \
-          "SELECT COUNT(*) as cnt FROM \`${_PROJECT_ID}.preprod_dataset.users\`" \
-          --format=csv | tail -1 | tr -d ' ')
-        echo "PRE-PROD row count: $$ROW_COUNT"
-        if [ "$$ROW_COUNT" -gt "0" ]; then
+        bq query \
+          --project_id="${_PROJECT_ID}" \
+          --nouse_legacy_sql \
+          --format=csv \
+          --quiet=true \
+          "SELECT COUNT(*) as row_count FROM \`${_PROJECT_ID}.preprod_dataset.users\`" \
+          > /tmp/result.txt 2>&1
+        cat /tmp/result.txt
+        ROW_COUNT=$$(grep -E '^[0-9]+$' /tmp/result.txt | head -1 | tr -d ' \r\n')
+        echo "Row count: [$$ROW_COUNT]"
+        if [ -n "$$ROW_COUNT" ] && [ "$$ROW_COUNT" -gt 0 ]; then
           echo "✅ PRE-PROD validation passed"
         else
-          echo "❌ PRE-PROD FAILED"
+          echo "❌ PRE-PROD validation FAILED"
           exit 1
         fi
     waitFor: ["deploy-preprod"]
 
-  # ─────────────────────────────────────
-  # STEP 6: Deploy to PROD
-  # ─────────────────────────────────────
+  # STEP 6: Deploy PROD
   - name: "python:3.11"
     id: "deploy-prod"
     entrypoint: bash
     args:
       - "-c"
       - |
+        export PYTHONPATH="/builder/home/.local/lib/python3.11/site-packages"
+        export PROJECT_ID="${_PROJECT_ID}"
         gsutil cp gs://${_PROJECT_ID}-preprod-data-bucket/input/sample.csv \
                   gs://${_PROJECT_ID}-prod-data-bucket/input/sample.csv
         python pipeline/load_to_bq.py prod
-    env:
-      - "PROJECT_ID=${_PROJECT_ID}"
     waitFor: ["validate-preprod"]
 
-  # ─────────────────────────────────────
-  # STEP 7: Final validation PROD
-  # ─────────────────────────────────────
+  # STEP 7: Validate PROD
   - name: "gcr.io/google.com/cloudsdktool/cloud-sdk"
     id: "validate-prod"
     entrypoint: bash
     args:
       - "-c"
       - |
-        ROW_COUNT=$$(bq query --nouse_legacy_sql \
-          "SELECT COUNT(*) as cnt FROM \`${_PROJECT_ID}.prod_dataset.users\`" \
-          --format=csv | tail -1 | tr -d ' ')
-        echo "PROD row count: $$ROW_COUNT"
-        if [ "$$ROW_COUNT" -gt "0" ]; then
+        bq query \
+          --project_id="${_PROJECT_ID}" \
+          --nouse_legacy_sql \
+          --format=csv \
+          --quiet=true \
+          "SELECT COUNT(*) as row_count FROM \`${_PROJECT_ID}.prod_dataset.users\`" \
+          > /tmp/result.txt 2>&1
+        cat /tmp/result.txt
+        ROW_COUNT=$$(grep -E '^[0-9]+$' /tmp/result.txt | head -1 | tr -d ' \r\n')
+        echo "Row count: [$$ROW_COUNT]"
+        if [ -n "$$ROW_COUNT" ] && [ "$$ROW_COUNT" -gt 0 ]; then
           echo "✅ PROD LIVE!"
         else
-          echo "❌ PROD FAILED"
+          echo "❌ PROD validation FAILED"
           exit 1
         fi
     waitFor: ["deploy-prod"]
