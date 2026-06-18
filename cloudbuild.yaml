@@ -1,6 +1,5 @@
-# cloudbuild.yaml
 substitutions:
-  _PROJECT_ID: project-6e64a1a1-8e69-4a88-93d
+  _PROJECT_ID: project-6e64a1a1-8e69-4a88-93d8
 
 steps:
 
@@ -32,11 +31,11 @@ steps:
     args:
       - "-c"
       - |
-        ROWS=$(bq query --nouse_legacy_sql \
+        ROW_COUNT=$$(bq query --nouse_legacy_sql \
           "SELECT COUNT(*) as cnt FROM \`${_PROJECT_ID}.dev_dataset.users\`" \
-          | tail -1 | tr -d ' ')
-        echo "DEV row count: $ROWS"
-        if [ "$ROWS" -gt "0" ]; then
+          --format=csv | tail -1 | tr -d ' ')
+        echo "DEV row count: $$ROW_COUNT"
+        if [ "$$ROW_COUNT" -gt "0" ]; then
           echo "✅ DEV validation passed"
         else
           echo "❌ DEV validation FAILED"
@@ -53,10 +52,8 @@ steps:
     args:
       - "-c"
       - |
-        # Copy data from dev bucket to preprod bucket
         gsutil cp gs://${_PROJECT_ID}-dev-data-bucket/input/sample.csv \
                   gs://${_PROJECT_ID}-preprod-data-bucket/input/sample.csv
-        # Run pipeline
         python pipeline/load_to_bq.py preprod
     env:
       - "PROJECT_ID=${_PROJECT_ID}"
@@ -71,11 +68,11 @@ steps:
     args:
       - "-c"
       - |
-        ROWS=$(bq query --nouse_legacy_sql \
+        ROW_COUNT=$$(bq query --nouse_legacy_sql \
           "SELECT COUNT(*) as cnt FROM \`${_PROJECT_ID}.preprod_dataset.users\`" \
-          | tail -1 | tr -d ' ')
-        echo "PRE-PROD row count: $ROWS"
-        if [ "$ROWS" -gt "0" ]; then
+          --format=csv | tail -1 | tr -d ' ')
+        echo "PRE-PROD row count: $$ROW_COUNT"
+        if [ "$$ROW_COUNT" -gt "0" ]; then
           echo "✅ PRE-PROD validation passed"
         else
           echo "❌ PRE-PROD FAILED"
@@ -108,11 +105,16 @@ steps:
     args:
       - "-c"
       - |
-        ROWS=$(bq query --nouse_legacy_sql \
+        ROW_COUNT=$$(bq query --nouse_legacy_sql \
           "SELECT COUNT(*) as cnt FROM \`${_PROJECT_ID}.prod_dataset.users\`" \
-          | tail -1 | tr -d ' ')
-        echo "PROD row count: $ROWS"
-        [ "$ROWS" -gt "0" ] && echo "✅ PROD LIVE!" || (echo "❌ PROD FAILED" && exit 1)
+          --format=csv | tail -1 | tr -d ' ')
+        echo "PROD row count: $$ROW_COUNT"
+        if [ "$$ROW_COUNT" -gt "0" ]; then
+          echo "✅ PROD LIVE!"
+        else
+          echo "❌ PROD FAILED"
+          exit 1
+        fi
     waitFor: ["deploy-prod"]
 
 options:
