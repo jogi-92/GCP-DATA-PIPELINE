@@ -1,0 +1,119 @@
+# cloudbuild.yaml
+substitutions:
+  _PROJECT_ID: project-6e64a1a1-8e69-4a88-93d
+
+steps:
+
+  # ─────────────────────────────────────
+  # STEP 1: Install dependencies
+  # ─────────────────────────────────────
+  - name: "python:3.11"
+    id: "install-deps"
+    entrypoint: pip
+    args: ["install", "-r", "pipeline/requirements.txt", "--user"]
+
+  # ─────────────────────────────────────
+  # STEP 2: Run pipeline on DEV
+  # ─────────────────────────────────────
+  - name: "python:3.11"
+    id: "deploy-dev"
+    entrypoint: python
+    args: ["pipeline/load_to_bq.py", "dev"]
+    env:
+      - "PROJECT_ID=${_PROJECT_ID}"
+    waitFor: ["install-deps"]
+
+  # ─────────────────────────────────────
+  # STEP 3: Validate DEV (row count check)
+  # ─────────────────────────────────────
+  - name: "gcr.io/google.com/cloudsdktool/cloud-sdk"
+    id: "validate-dev"
+    entrypoint: bash
+    args:
+      - "-c"
+      - |
+        ROWS=$(bq query --nouse_legacy_sql \
+          "SELECT COUNT(*) as cnt FROM \`${_PROJECT_ID}.dev_dataset.users\`" \
+          | tail -1 | tr -d ' ')
+        echo "DEV row count: $ROWS"
+        if [ "$ROWS" -gt "0" ]; then
+          echo "✅ DEV validation passed"
+        else
+          echo "❌ DEV validation FAILED"
+          exit 1
+        fi
+    waitFor: ["deploy-dev"]
+
+  # ─────────────────────────────────────
+  # STEP 4: Deploy to PRE-PROD
+  # ─────────────────────────────────────
+  - name: "python:3.11"
+    id: "deploy-preprod"
+    entrypoint: bash
+    args:
+      - "-c"
+      - |
+        # Copy data from dev bucket to preprod bucket
+        gsutil cp gs://${_PROJECT_ID}-dev-data-bucket/input/sample.csv \
+                  gs://${_PROJECT_ID}-preprod-data-bucket/input/sample.csv
+        # Run pipeline
+        python pipeline/load_to_bq.py preprod
+    env:
+      - "PROJECT_ID=${_PROJECT_ID}"
+    waitFor: ["validate-dev"]
+
+  # ─────────────────────────────────────
+  # STEP 5: Validate PRE-PROD
+  # ─────────────────────────────────────
+  - name: "gcr.io/google.com/cloudsdktool/cloud-sdk"
+    id: "validate-preprod"
+    entrypoint: bash
+    args:
+      - "-c"
+      - |
+        ROWS=$(bq query --nouse_legacy_sql \
+          "SELECT COUNT(*) as cnt FROM \`${_PROJECT_ID}.preprod_dataset.users\`" \
+          | tail -1 | tr -d ' ')
+        echo "PRE-PROD row count: $ROWS"
+        if [ "$ROWS" -gt "0" ]; then
+          echo "✅ PRE-PROD validation passed"
+        else
+          echo "❌ PRE-PROD FAILED"
+          exit 1
+        fi
+    waitFor: ["deploy-preprod"]
+
+  # ─────────────────────────────────────
+  # STEP 6: Deploy to PROD
+  # ─────────────────────────────────────
+  - name: "python:3.11"
+    id: "deploy-prod"
+    entrypoint: bash
+    args:
+      - "-c"
+      - |
+        gsutil cp gs://${_PROJECT_ID}-preprod-data-bucket/input/sample.csv \
+                  gs://${_PROJECT_ID}-prod-data-bucket/input/sample.csv
+        python pipeline/load_to_bq.py prod
+    env:
+      - "PROJECT_ID=${_PROJECT_ID}"
+    waitFor: ["validate-preprod"]
+
+  # ─────────────────────────────────────
+  # STEP 7: Final validation PROD
+  # ─────────────────────────────────────
+  - name: "gcr.io/google.com/cloudsdktool/cloud-sdk"
+    id: "validate-prod"
+    entrypoint: bash
+    args:
+      - "-c"
+      - |
+        ROWS=$(bq query --nouse_legacy_sql \
+          "SELECT COUNT(*) as cnt FROM \`${_PROJECT_ID}.prod_dataset.users\`" \
+          | tail -1 | tr -d ' ')
+        echo "PROD row count: $ROWS"
+        [ "$ROWS" -gt "0" ] && echo "✅ PROD LIVE!" || (echo "❌ PROD FAILED" && exit 1)
+    waitFor: ["deploy-prod"]
+
+options:
+  logging: CLOUD_LOGGING_ONLY
